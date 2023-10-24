@@ -6,54 +6,70 @@ import (
 	"io"
 )
 
+/*
+Frame定义
+
+frameHeader + framePayload(packet)
+
+frameHeader
+	4 bytes: length 整型，帧总长度(含头及payload)
+
+framePayload
+	Packet
+*/
+
 type FramePayload []byte
 
 type StreamFrameCodec interface {
-	Encode(io.Writer, FramePayload) error
-	Decode(io.Reader) (FramePayload, error)
+	Encode(io.Writer, FramePayload) error   // data -> frame，并写入io.Writer
+	Decode(io.Reader) (FramePayload, error) // 从io.Reader中提取frame payload，并返回给上层
 }
-
-var ErrShortRead = errors.New("short read")
 
 var ErrShortWrite = errors.New("short write")
+var ErrShortRead = errors.New("short read")
 
-type MyFrameCodec struct {
+type myFrameCodec struct{}
+
+func NewMyFrameCodec() StreamFrameCodec {
+	return &myFrameCodec{}
 }
 
-func (m *MyFrameCodec) Encode(w io.Writer, f FramePayload) error {
-	l := len(f)
-	var total int32 = int32(l) + 4
-	err := binary.Write(w, binary.BigEndian, &total)
+func (p *myFrameCodec) Encode(w io.Writer, framePayload FramePayload) error {
+	var f = framePayload
+	var totalLen int32 = int32(len(framePayload)) + 4
+
+	err := binary.Write(w, binary.BigEndian, &totalLen)
 	if err != nil {
 		return err
 	}
 
-	n, err := w.Write([]byte(f))
+	n, err := w.Write([]byte(f)) // write the frame payload to outbound stream
 	if err != nil {
 		return err
 	}
-	if n != l {
+
+	if n != len(framePayload) {
 		return ErrShortWrite
 	}
-
 	return nil
 }
 
-func (m *MyFrameCodec) Decode(reader io.Reader) (FramePayload, error) {
+func (p *myFrameCodec) Decode(r io.Reader) (FramePayload, error) {
+	var totalLen int32
+	err := binary.Read(r, binary.BigEndian, &totalLen)
+	if err != nil {
+		return nil, err
+	}
 
-	var total int32
-	err := binary.Read(reader, binary.BigEndian, &total)
+	buf := make([]byte, totalLen-4)
+	n, err := io.ReadFull(r, buf)
 	if err != nil {
 		return nil, err
 	}
-	payload := make(FramePayload, total-4)
-	n, err := io.ReadFull(reader, payload) //io.ReadFull一般会读满你所需的字节数，除非遇到EOF或ErrUnexpectedEOF。
-	if err != nil {
-		return nil, err
-	}
-	if n != int(total)-4 {
+
+	if n != int(totalLen-4) {
 		return nil, ErrShortRead
 	}
 
-	return payload, nil
+	return FramePayload(buf), nil
 }
